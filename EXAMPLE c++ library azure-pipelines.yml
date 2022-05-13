@@ -1,0 +1,63 @@
+#Parameters at the top add the GUI checkboxes to the web interface when running manually.
+#Parameters in the template definition below are passed to the ones in the template file.
+parameters:
+  - name: BuildDebugLocal
+    displayName: Build Debug Versions
+    type: boolean
+    default: true
+  - name: EnableUnitTestsLocal
+    displayName: Execute unit tests
+    type: boolean
+    default: true
+  - name: EnableQualityChecksLocal
+    displayName: Execute quality checks
+    type: boolean
+    default: true
+  - name: CompileTimeoutLocal
+    displayName: Compile Job Timeout
+    type: number
+    default: 30
+
+trigger:
+ branches:
+    include:
+    - '*'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Sorter Projects/PipelineTools
+      ref: Release1.0
+
+#variables setup the basic values that the template will use for this specific pipeline
+variables:
+- group: 'Build Variables'
+- name: solution
+  value: '**/*.sln'
+- name: BuildDate
+  value: $[format('{0:MM}-{0:dd}-{0:yyyy}', pipeline.startTime)]
+- name: BuildYear
+  value: $[format('{0:yyyy}', pipeline.startTime)]
+- name: CompileJobPool
+  value: YourAgentVMS
+- name: CodeSigningEnabled
+  value: false
+- name: EnableNugetPackage
+  value: true
+- name: ArtifactName
+  value: drop
+- name: ArtifactContents
+  value: build\out\**
+- name: defMajorVer
+  value: 4.1
+
+jobs:
+- template: C++ Library.yml@templates
+  parameters:
+    BuildDebug: ${{ parameters.BuildDebugLocal }}
+    EnableUnitTests: ${{ parameters.EnableUnitTestsLocal }}
+    EnableQualityChecks: ${{ parameters.EnableQualityChecksLocal }}
+    CompileTimeout: ${{ parameters.CompileTimeoutLocal }}
+    CodeSigningEnabled: ${{ variables.CodeSigningEnabled }}
+    EnableNugetPackage: ${{ variables.EnableNugetPackage }}

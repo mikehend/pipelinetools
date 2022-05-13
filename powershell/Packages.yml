@@ -1,0 +1,58 @@
+steps:
+  - task: InlinePowershell@1
+    displayName: Get Universal Packages (PowerShell)
+    inputs:
+      Script: |
+        Param (
+            [string]$sourcesDirectory
+        )
+
+        Write-Host "sourcesDirectory: $sourcesDirectory"
+        $env:AZURE_DEVOPS_EXT_PAT = '' #a PAT with read access to the azure artifact feed
+        Set-Location -Path $sourcesDirectory
+        
+        if (Test-Path -path "$sourcesDirectory\Universal Packages\packages.json") {
+            $json = Get-Content "$sourcesDirectory\Universal Packages\packages.json" | ConvertFrom-Json
+            $jsonString = Get-Content "$sourcesDirectory\Universal Packages\packages.json"
+            Write-Output "JSON: $jsonString"
+
+            if ($json -ne $null) {
+                $json | foreach {
+                    $var = $_.name + "PackageName"
+                    $packageName = $_.package_name
+                    $val = $_.package_name
+                    Write-Host "##vso[task.setvariable variable=$var]$val"
+                    Write-Host  "$var=$val"
+
+                    $var = $_.name + "Version"
+                    $packageVersion = $_.version
+                    $val = $_.version
+                    Write-Host "##vso[task.setvariable variable=$var]$val"
+                    Write-Host "$var=$val"
+
+                    $var = $_.name + "LocalPath"
+                    $packageLocalPath = $_.localpath
+                    $val = $_.localpath
+                    Write-Host "##vso[task.setvariable variable=$var]$val"
+                    Write-Host "$var=$val"
+
+                    $cmd = 'az artifacts universal download --organization "https://yoururl.visualstudio.com/" --feed "PackageFeed" --name "' + $packageName + '" --version "' + $packageVersion + '" --path "' + $packageLocalPath + '"'
+                    Write-Host $cmd
+                    $result = cmd /c $cmd 2>&1
+                    if ( -not $? ) {
+                        $search_result = Select-String -InputObject $result -pattern "ERROR:"
+                        if ( ($search_result -ne $null) -and ($search_result.matches -ne $null) ) {
+                            Write-Host $result -ForegroundColor red
+                            throw "Error downloading '$packageName'"  #'break/continue' in ForEach-Object terminate entire script so exit loop with 'throw'
+                        }
+                    }
+                    #..Write out result so can see exact version fetched when packageVersion includes a wildcard
+                    Write-Host $result -ForegroundColor green
+                    Write-Host "`n"
+                }
+            }
+        } else {
+          Write-Host "No packages.json file found for this installer..."
+        }
+
+      ScriptArguments: '-sourcesDirectory $(Build.SourcesDirectory)'

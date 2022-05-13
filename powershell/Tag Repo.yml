@@ -1,0 +1,10 @@
+steps:
+- task: CmdLine@2
+  displayName: 'Tag Sources'
+  condition: and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release'))
+  inputs:
+    script: |
+      echo git tag "v$(BuildReleaseVersion)" $(Build.SourceVersion) -f
+      git tag "v$(BuildReleaseVersion)" $(Build.SourceVersion) -f
+      echo git push origin "v$(BuildReleaseVersion)" -f
+      git push origin "v$(BuildReleaseVersion)" -f

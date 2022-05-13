@@ -1,0 +1,342 @@
+parameters:
+  - name: EnableUnitTests
+    displayName: Execute unit tests
+    type: boolean
+    default: true
+
+  - name: EnableQualityChecks
+    displayName: Execute quality checks
+    type: boolean
+    default: true
+
+  - name: CompileTimeout
+    displayName: Compile Job Timeout
+    type: number
+    default: 240
+
+  - name: BuildPlatform
+    displayName: Build Platform
+    type: string
+    default: Any CPU
+
+  - name: BuildConfiguration
+    displayName: Build Configuration
+    type: string
+    default: Release
+
+  - name: EnableUniversalPackage
+    displayName: Enable Universal Package (Release Only)
+    type: boolean
+    default: false
+
+  - name: EnableNugetPackage
+    displayName: Enable Nuget Package Publish (Release Only)
+    type: boolean
+    default: false
+
+  - name: PreCompileTemplate
+    displayName: Execute Precompile Template
+    type: string
+    default: ''
+
+  - name: netCoreBuild
+    displayName: .net core build
+    type: boolean
+    default: false
+
+  - name: msBuild_arguments
+    displayName: MSBuild Arguments
+    type: string
+    default: /p:BUILD_NUMBER=$(Build.BuildID);BUILD_TAG="$(Build.SourceBranchName) $(Build.BuildNumber)";YEAR_TAG=$(BuildYear);BUILD_DATE=$(BuildDate)
+
+  - name: msBuild_architecture
+    displayName: MSBuild Architecture
+    type: string
+    default: 'x86'
+
+  - name: PostCompileTemplate
+    displayName: Execute PostCompile Template
+    type: string
+    default: ''
+
+  - name: UnitTestList
+    displayName: Setup for Unit Tests
+    type: object
+    default:
+      - Location: |
+                 **\Release\**\*test*.dll
+                 **\Debug\**\*test*.dll
+        Options: ''
+        DisplayName: 'default template'
+        Parallel: true
+        InIsolation: true
+        MaxAttempts: 6
+        Filtercriteria: 'TestCategory=BuildServerTests'
+#The following left as an example of how to construct a case with multiple tests
+#      - Location: '**\bin\**\net472\**\TestSpace*.dll'
+#        Options: '/Platform:x64 /Framework:".NETFramework,Version=v4.7.2"'
+#        DisplayName: '4.7.2'
+#        Parallel: false
+#        InIsolation: true
+#        MaxAttempts: 6
+#      - Location: '**\bin\**\netcoreapp3.1\**\TestSpace*.dll'
+#        Options: '/Platform:x64 /Framework:".NETCoreApp,Version=v3.1"'
+#        DisplayName: NetCore3.1
+#        Parallel: false
+#        InIsolation: true
+#        MaxAttempts: 6
+
+  - name: DotnetBuild
+    displayName: Dotnet Build
+    type: object
+    default: 
+      Projects: '**/*.csproj'
+      Arguments: '-c $(BuildConfiguration) -p:Platform="$(BuildPlatform)" -p:InformationalVersion="$(BuildVer) ($(Build.SourceBranchName) $(Build.BuildNumber))" -p:VersionPrefix="$(BuildVer).0" -p:IncludeSourceRevisionInInformationalVersion=false'
+
+  - name: EnableDotnetBuild
+    displayName: Execute dotnet build
+    type: boolean
+    default: false
+    
+  - name: EnableDotnetPublish
+    displayName: Execute dotnet publish
+    type: boolean
+    default: false
+
+  - name: DotnetPublish
+    displayName: Dotnet Publish
+    type: object
+    default: 
+      Projects: '**/*.csproj'
+      Arguments: '-c $(BuildConfiguration) -o publish -p:"Platform=$(BuildPlatform)" -p:InformationalVersion="$(BuildVer) ($(Build.SourceBranchName) $(Build.BuildNumber))" -p:VersionPrefix="$(BuildVer).0" -p:IncludeSourceRevisionInInformationalVersion=false'
+      ModifyOutputPath: true
+
+#####################################################################################################################################
+
+jobs:
+- job: Compile
+  displayName: Compile Job
+  timeoutInMinutes: ${{ parameters.CompileTimeout }}
+  cancelTimeoutInMinutes: 1
+  workspace:
+    clean: all
+  pool:
+    name: $(CompileJobPool)
+
+  steps:
+  - checkout: self
+    persistCredentials: true
+    clean: true
+
+  - template: powershell/JobScopeVariables.yml
+
+  #get image file to show up in logs
+  - task: CmdLine@2
+    displayName: Record VM Image Details
+    inputs:
+      script: |
+        dir c:\YourCompany
+        type c:\YourComany\*.txt
+        whoami /all
+        git version
+
+  - ${{ if eq(parameters.EnableUnitTests, true) }}:
+    - task: CmdLine@2
+      displayName: Start SQL Server
+      inputs:
+        script: 'sc start MSSQLSERVER || EXIT /B 0'
+
+  - task: NuGetToolInstaller@0
+    displayName: 'Use NuGet $(nugetVersion)'
+    inputs:
+      versionSpec: '$(nugetVersion)'
+
+  - task: NuGetCommand@2
+    displayName: 'NuGet restore SorterPackages'
+    inputs:
+      command: 'restore'
+      restoreSolution: '**/*.sln'
+      feedsToUse: 'select'
+      vstsFeed: ''      #My private feed in Azure DevOps
+      includeNuGetOrg: false
+
+  - ${{ if ne(parameters.PreCompileTemplate, '') }}:
+    - template: ${{ parameters.PreCompileTemplate }} # i.e. AngularPrecompile.yml@self
+      parameters:
+        BuildConfiguration: ${{ parameters.BuildConfiguration }}
+
+  - ${{ if eq(parameters.EnableDotnetBuild, false) }}:
+    - task: VSBuild@1
+      displayName: Build solution **\*.sln
+      inputs:
+        solution: $(BuildParameters.solution)
+        msbuildArgs: ${{ parameters.msBuild_arguments }}
+        platform: ${{ parameters.BuildPlatform }}
+        configuration: ${{ parameters.BuildConfiguration }}
+        msbuildArchitecture: ${{ parameters.msBuild_architecture }} #'x64' or default = 'x86'
+        vsVersion: '$(VsBuildVersion)'
+        createLogFile: true
+        clean: true
+      enabled: true
+
+  - ${{ if eq(parameters.EnableDotnetPublish, true) }}:
+    - task: DotNetCoreCLI@2
+      displayName: 'Dotnet Publish'
+      inputs:
+        command: 'publish'
+        publishWebProjects: false
+        projects:  ${{ parameters.DotnetPublish.Projects }}
+        arguments: ${{ parameters.DotnetPublish.Arguments }}
+        zipAfterPublish: false
+        modifyOutputPath: ${{ parameters.DotnetPublish.ModifyOutputPath }}
+
+  - ${{ if eq(parameters.EnableDotnetBuild, true) }}:
+    - task: DotNetCoreCLI@2
+      displayName: Dotnet Build Projects
+      inputs:
+        command: 'build'
+        projects: ${{ parameters.DotnetBuild.Projects }}
+        arguments: ${{ parameters.DotnetBuild.Arguments }}
+      enabled: true
+
+  - task: codesigning@2
+    displayName: 'Code Signing'
+    inputs:
+      secureFileId:                                       #Secure File ID in Azure DevOps (Certificate file)
+      signCertPassword: $(CertificatePW)
+      files: $(SigningFiles)
+      description: $(SigningDescription)
+
+  - ${{ if ne(parameters.PostCompileTemplate, '') }}:
+    - template: ${{ parameters.PostCompileTemplate }} # i.e. AngularPostcompile.yml@self
+      parameters:
+        BuildConfiguration: ${{ parameters.BuildConfiguration }}
+
+  - ${{ if eq(parameters.EnableUnitTests, true) }}:
+    - ${{ each test in parameters.UnitTestList }}:
+      - task: VSTest@2
+        displayName: VsTest - testAssemblies ${{ test.DisplayName }}
+        inputs:
+          testAssemblyVer2: |
+            ${{ test.Location }}
+            !**\obj\**
+            !**\${{ parameters.BuildConfiguration }}\**\*Microsoft*.dll
+            !**\${{ parameters.BuildConfiguration }}\**\testhost.dll
+            !**\${{ parameters.BuildConfiguration }}\**\ref\*test*.dll
+          testFiltercriteria: ${{ test.Filtercriteria }}
+          runInParallel: ${{ test.Parallel }}
+          runTestsInIsolation: ${{ test.InIsolation }}
+          codeCoverageEnabled: true
+          platform: ${{ parameters.BuildPlatform }}
+          configuration: ${{ parameters.BuildConfiguration }}
+          diagnosticsEnabled: True
+          rerunFailedTests: true
+          rerunMaxAttempts: ${{ test.MaxAttempts }}
+          otherConsoleOptions: '${{ test.Options }}'
+          runSettingsFile: $(RunSettingFile) #Default in Build Variables (library) normally empty string to allow vstest to run as expected
+          vsTestVersion: '$(VsTestVersion)'
+
+  - task: CopyFiles@2
+    displayName: 'Copy Files to: build.artifactstagingdirectory'
+    inputs:
+      SourceFolder: '$(system.defaultworkingdirectory)'
+      Contents: '$(ArtifactContents)'
+      TargetFolder: $(build.artifactstagingdirectory)
+      CleanTargetFolder: true
+    condition: "ne(variables['ArtifactContents'], '')"
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact: $(ArtifactName)'
+    inputs:
+      ArtifactName: $(ArtifactName)
+      PathtoPublish: $(build.artifactstagingdirectory)
+      publishLocation: 'Container'
+
+  - ${{ if eq(parameters.EnableQualityChecks, true) }}:
+    - task: BuildQualityChecks@6
+      displayName: 'Check build quality'
+      inputs:
+        checkWarnings: true
+        warningFailOption: fixed
+        showStatistics: true
+        includePartiallySucceeded: false
+
+  - ${{ if eq(parameters.EnableUniversalPackage, true) }}:
+    - task: UniversalPackages@0
+      displayName: Create Universal Package
+      condition: "and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release'))"
+      inputs:
+        command: publish
+        publishDirectory: $(PublishFiles)
+        feedListPublish: ''      #My private feed in Azure DevOps
+        packageListPublish: $(UniversalPackageName)
+        versionPublishSelector: custom
+        versionPublish: $(ReleaseOutputFolder).$(Build.BuildID)
+        packagePublishDescription: $(UniversalPackageDescription)
+
+  - ${{ if and(eq(parameters.EnableNugetPackage, true), eq(parameters.netCoreBuild, false)) }}:
+    - task: NuGetCommand@2
+      displayName: 'NuGet pack'
+      inputs:
+        command: pack
+        buildProperties: 'Configuration=${{ parameters.BuildConfiguration }}'
+      condition: and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release')) 
+
+  - ${{ if eq(parameters.EnableNugetPackage, true) }}:
+    - task: NuGetCommand@2
+      displayName: 'Nuget Publish to Azure Artifacts'
+      inputs:
+        command: 'push'
+        packagesToPush: '$(build.artifactstagingdirectory)/**/*.nupkg;**/*.nupkg;*.nupkg;!**/packages/**/*.nupkg;!$(build.artifactstagingdirectory)/**/*.symbols.nupkg;!**/*.symbols.nupkg'
+        nuGetFeedType: 'internal'
+        publishVstsFeed: ''      #My private feed in Azure DevOps
+        allowPackageConflicts: true
+      condition: and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release'))
+
+  - template: powershell/Tag Repo.yml
+
+  - task: EmailReport@1
+    displayName: 'e-Mail Report'
+    inputs:
+      subject: '[{environmentStatus}] {passPercentage} tests passed in $(Build.Repository.Name) stage for $(Build.BuildNumber)'
+      includeInToSectionStr: '1, 2, 3, 4'
+      defaultDomain: 'YourCompanyinc.com'
+      groupTestResultsBy: 'run'
+      includeCommits: true
+      maxTestFailuresToShow: '15'
+      includeOthersInTotal: false
+      usePreviousEnvironment: false
+      smtpConnectionEndpoint: '365 e-mail'
+      sendMailConditionConfig: $(eMailConditionConfig) #'Always,On New Failures Only,On Failure,On Success'
+      toAddress: $(emailtoList)
+      ccAddress: $(emailCCList)
+
+- job: Publish
+  displayName: Publish Job (Used for libraries)
+  dependsOn: Compile
+  timeoutInMinutes: 30
+  cancelTimeoutInMinutes: 1
+  condition: "and(succeeded('Compile'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release'), ne(variables['PublishOutputLocation'], '')) "
+  workspace:
+    clean: all
+  pool:
+    name: DomainAgent
+  steps:
+  - checkout: none
+
+  - template: powershell/JobScopeVariables.yml
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'current'
+      artifactName: $(ArtifactName)
+      targetPath: '$(Build.ArtifactStagingDirectory)'
+
+  - task: CopyFiles@2
+    displayName: 'Release only file copy for Installers'
+    inputs:
+      SourceFolder: $(Build.ArtifactStagingDirectory)\$(PublishFiles)
+      TargetFolder: $(Builds_base_path)\$(PublishOutputLocation)\$(ReleaseOutputFolder)
+      Contents: $(PublishFilesContents)
+      CleanTargetFolder: true
+      OverWrite: true

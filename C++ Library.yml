@@ -1,0 +1,256 @@
+parameters:
+  - name: BuildDebug
+    displayName: Build Debug Versions
+    type: boolean
+    default: true
+
+  - name: EnableUnitTests
+    displayName: Execute unit tests
+    type: boolean
+    default: true
+
+  - name: EnableQualityChecks
+    displayName: Execute quality checks
+    type: boolean
+    default: true
+
+  - name: CompileTimeout
+    displayName: Compile Job Timeout
+    type: number
+    default: 30
+
+  - name: CodeSigningEnabled
+    displayName: Enable code signing
+    type: boolean
+    default: false #C++ libraries usually are libs but turn this on for DLLs
+
+  - name: EnableUniversalPackage
+    displayName: Enable Universal Package (Release Only)
+    type: boolean
+    default: false
+
+  - name: EnableNugetPackage
+    displayName: Enable Nuget Package Publish (Release Only)
+    type: boolean
+    default: false
+
+  - name: BuildList
+    displayName: Setup for Build(s)
+    type: object
+    default:
+      - DisplayName: 'Build solution x86'
+        msbuildArgs: '-p:MSBuildAdditionalPreprocessorDefinitions="MAJOR_VERSION=$(MajorVer);MINOR_VERSION=$(MinorVer);BUILD_NUMBER=$(Build.BuildId);BUILD_DATE=$(BuildDate);PRODUCT_DESC=$(Build.Repository.Name) ($(Build.SourceBranchName) $(Build.BuildNumber));BUILD_YEAR=$(BuildYear)"'
+        vsVersion: '16.0'
+        platform: 'Win32'
+        clean: true
+      - DisplayName: 'Build solution x64'
+        msbuildArgs: '-p:MSBuildAdditionalPreprocessorDefinitions="MAJOR_VERSION=$(MajorVer);MINOR_VERSION=$(MinorVer);BUILD_NUMBER=$(Build.BuildId);BUILD_DATE=$(BuildDate);PRODUCT_DESC=$(Build.Repository.Name) ($(Build.SourceBranchName) $(Build.BuildNumber));BUILD_YEAR=$(BuildYear)"'
+        vsVersion: '16.0'
+        platform: 'x64'
+        clean: true
+
+  - name: UnitTestList
+    displayName: Setup for Unit Tests
+    type: object
+    default:
+      - Location: |
+                 build\**\x86 Release\**\*test*.dll
+                 **\x86 Release\**\*test*.dll
+        Platform: 'Win32'
+        Configuration: 'Release'
+        Options: ''
+        FilterCritria: 'Owner!=IgnoreServer'
+        DisplayName: 'VsTest - testAssemblies x86'
+        Parallel: true
+        InIsolation: true
+        ImpactedOnly: false
+        MaxAttempts: 6
+      - Location: |
+                 build\**\x64 Release\**\*test*.dll
+                 **\x64 Release\**\*test*.dll
+        Platform: 'x64'
+        Configuration: 'Release'
+        Options: ''
+        FilterCritria: 'Owner!=IgnoreServer'
+        DisplayName: 'VsTest - testAssemblies x64'
+        Parallel: true
+        InIsolation: true
+        ImpactedOnly: false
+        MaxAttempts: 6
+
+#####################################################################################################################################
+
+jobs:
+- job: Compile
+  displayName: Compile Job
+  timeoutInMinutes: ${{ parameters.CompileTimeout }}
+  cancelTimeoutInMinutes: 1
+  workspace:
+    clean: all
+  pool:
+    name: $(CompileJobPool)
+    demands:
+      - msbuild
+      - visualstudio
+      - vstest
+
+  steps:
+  - checkout: self
+    persistCredentials: true
+
+  - template: powershell/JobScopeVariables.yml
+
+  #get image file to show up in logs
+  - task: CmdLine@2
+    displayName: Record VM Image Details
+    inputs:
+      script: |
+        dir c:\YourCompany
+        type c:\YourCompany\*.txt
+        whoami /all
+        git version
+
+  - task: NuGetToolInstaller@1
+    displayName: 'Use NuGet $(nugetVersion)'
+    inputs:
+      versionSpec: $(nugetVersion)
+
+  - task: NuGetCommand@2
+    displayName: 'NuGet restore'
+    inputs:
+      restoreSolution: '$(solution)'
+      vstsFeed: ''      #My private feed in Azure DevOps
+
+  - ${{ if ne(parameters.BuildDebug, '') }}:
+    - ${{ each buildItem in parameters.BuildList }}:
+      - task: VSBuild@1
+        displayName: '${{ buildItem.DisplayName }} Debug'
+        inputs:
+          solution: '$(solution)'                             #Should come from repo base yaml file
+          msbuildArgs: ${{ buildItem.msbuildArgs }}
+          vsVersion: ${{ buildItem.vsVersion }}
+          platform: ${{ buildItem.platform }}
+          configuration: 'Debug'
+          clean: ${{ buildItem.clean }}
+
+  - ${{ each buildItem in parameters.BuildList }}:
+    - task: VSBuild@1
+      displayName: '${{ buildItem.DisplayName }} Release'
+      inputs:
+        solution: '$(solution)'                             #Should come from repo base yaml file
+        msbuildArgs: ${{ buildItem.msbuildArgs }}
+        vsVersion: ${{ buildItem.vsVersion }}
+        platform: ${{ buildItem.platform }}
+        configuration: 'Release'
+        clean: ${{ buildItem.clean }}
+
+  - ${{ if ne(parameters.CodeSigningEnabled, '') }}:
+    - task: codesigning@2
+      displayName: 'Code Signing - $(SigningDescription) --> $(SigningFiles)'
+      inputs:
+        secureFileId:                                       #Secure File ID in Azure DevOps (Certificate file)
+        signCertPassword: $(CertificatePW)
+        files: $(SigningFiles)                              #Should come from repo base yaml file
+        description: $(SigningDescription)                  #Should come from repo base yaml file
+
+  - ${{ if eq(parameters.EnableUnitTests, true) }}:
+    - ${{ each test in parameters.UnitTestList }}:
+      - task: VSTest@2
+        displayName: VsTest - testAssemblies ${{ test.DisplayName }}
+        inputs:
+          testAssemblyVer2: |
+            ${{ test.Location }}                                            #Location within this instance of UnitTestList (You can add inclusions and exclusions...)
+            !**\obj\**
+            !**\${{ parameters.BuildConfiguration }}\**\*Microsoft*.dll
+            !**\${{ parameters.BuildConfiguration }}\**\testhost.dll
+          testFiltercriteria: ${{ test.FilterCritria }}
+          runInParallel: ${{ test.Parallel }}
+          runTestsInIsolation: ${{ test.InIsolation }}
+          runOnlyImpactedTests: ${{ test.ImpactedOnly }}
+          codeCoverageEnabled: false   
+          platform: ${{ test.Platform }}
+          configuration: ${{ test.Configuration }}
+          diagnosticsEnabled: True
+          rerunFailedTests: True
+          rerunMaxAttempts: ${{ test.MaxAttempts }}
+          otherConsoleOptions: '${{ test.Options }}'
+          runSettingsFile: $(RunSettingFile) #Default in Build Variables (library) normally empty string to allow vstest to run default
+
+  - task: CopyFiles@2
+    displayName: 'Copy output Files to: Artifact Staging Folder'
+    inputs:
+      SourceFolder: '$(system.defaultworkingdirectory)'
+      Contents: $(ArtifactContents)                     #Should come from repo base yaml file
+      TargetFolder: '$(build.artifactstagingdirectory)'
+      CleanTargetFolder: true
+    condition: "ne(variables['ArtifactContents'], '')"
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Artifact: $(ArtifactName)'
+    inputs:
+      PathtoPublish: '$(build.ArtifactStagingDirectory)'
+      ArtifactName: $(ArtifactName)                     #Should come from repo base yaml file
+      publishLocation: 'Container'
+
+  - ${{ if eq(parameters.EnableQualityChecks, true) }}:
+    - task: BuildQualityChecks@6
+      displayName: 'Check build quality'
+      inputs:
+        checkWarnings: true
+        warningFailOption: fixed
+        showStatistics: true
+        includePartiallySucceeded: false
+
+  - ${{ if eq(parameters.EnableUniversalPackage, true) }}:
+    - task: UniversalPackages@0
+      displayName: Create Universal Package
+      condition: "and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release'))"
+      inputs:
+        command: publish
+        publishDirectory: $(PublishFiles)                           #Should come from repo base yaml file
+        feedListPublish: d85f9e5f-22e9-4b36-a338-2771188f297d
+        packageListPublish: $(UniversalPackageName)                 #Should come from repo base yaml file
+        versionPublishSelector: custom
+        versionPublish: $(UPVersion)                                #$(BuildReleaseVersion) Changed from BuildReleaseVersion because universal packages require only 3 digit version
+        packagePublishDescription: $(UniversalPackageDescription)   #Should come from repo base yaml file
+
+  - ${{ if eq(parameters.EnableNugetPackage, true) }}:
+    - task: NuGetCommand@2
+      displayName: 'NuGet pack'
+      inputs:
+        command: pack
+        packagesToPack: $(NugetPackagesToPack)                      #Build Variables
+        versioningScheme: 'byEnvVar'
+        versionEnvVar: 'BuildReleaseVersion'                        #From JobScopeVariables
+        buildProperties:                                            #Left empty
+      condition: and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release')) 
+
+  - ${{ if eq(parameters.EnableNugetPackage, true) }}:
+    - task: NuGetCommand@2
+      displayName: 'Nuget Publish to Azure Artifacts'
+      inputs:
+        command: 'push'
+        packagesToPush: $(NugetPackagesToPush)                      #Build Variables
+        nuGetFeedType: 'internal'
+        publishVstsFeed: '/d85f9e5f-22e9-4b36-a338-2771188f297d'
+        allowPackageConflicts: true
+      condition: and(in(variables['Agent.JobStatus'], 'Succeeded', 'PartiallySucceeded'), startsWith(variables['Build.SourceBranch'], 'refs/heads/Release'))
+
+  - template: powershell/Tag Repo.yml
+
+  - task: EmailReport@1
+    displayName: 'e-Mail Report'
+    inputs:
+      subject: '[{environmentStatus}] {passPercentage} tests passed in $(Build.Repository.Name) stage for $(Build.BuildNumber)'
+      includeInToSectionStr: '1, 2, 3, 4'
+      defaultDomain: 'YourCompanyinc.com'
+      groupTestResultsBy: 'run'
+      includeCommits: true
+      maxTestFailuresToShow: '15'
+      includeOthersInTotal: false
+      usePreviousEnvironment: false
+      smtpConnectionEndpoint: '365 e-mail'
+      sendMailConditionConfig: $(eMailConditionConfig) #'Always,On New Failures Only,On Failure,On Success'
+      toAddress: $(emailtoList)
+      ccAddress: $(emailCCList)
+

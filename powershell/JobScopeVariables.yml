@@ -1,0 +1,67 @@
+steps:
+  - task: InlinePowershell@1
+    displayName: Set job-scope variables
+    inputs:
+      Script: |
+        Param (
+            [string]$buildsourcename,
+            [string]$buildsourceversion,
+            [string]$defMajorVer,
+            [string]$buildid,
+            [string]$buildnumber
+        )
+        
+        Write-Host "##vso[task.setvariable variable=SourceRevisionId;]$buildsourceversion"
+
+        # extract branch number from source branch name
+        $temp = ""
+        $ExeFilenameSuffix= "_develop"
+        $BuildReleaseVersion = ""
+        $BuildReleaseVersionWithBuildNumber = ""
+        if ($buildsourcename.StartsWith('release', 'CurrentCultureIgnoreCase'))
+        {
+            Write-Host "Release branch detected"
+            $ExeFilenameSuffix= "" #Release branch
+            $temp = $buildsourcename.Substring(7).TrimEnd()
+            Write-Host "##vso[task.setvariable variable=ReleaseOutputFolder;]$temp" 
+            Write-Host "ReleaseOutputFolder: ''$temp'' (Extracted from branch name)"
+        }
+        elseif ($buildsourcename.StartsWith('sqa', 'CurrentCultureIgnoreCase'))
+        {
+            Write-Host "SQA branch detected"
+            $ExeFilenameSuffix= "_sqa"
+            $temp = $buildsourcename.Substring(3).TrimEnd()
+            Write-Host "##vso[task.setvariable variable=ReleaseOutputFolder;]$temp" 
+            Write-Host "ReleaseOutputFolder: ''$temp'' (Extracted from branch name)"
+        }
+        elseif (![string]::IsNullOrWhiteSpace($defMajorVer))
+        {
+            Write-Host "Using defMajorVer.. $defMajorVer (Usually a developer branch)"
+            $temp = $defMajorVer.Trim()
+        }
+        else
+        {
+            Write-Host "Unable to get version from branchname or defMajorVer...  Defaulting to 99.99"
+            $temp = "99.99"
+        }
+
+        $ver = [Version]($temp)
+        $majorVer = $ver.Major
+        $minorVer = $ver.Minor
+        Write-Host "##vso[task.setvariable variable=MajorVer]$majorVer"
+        Write-Host "##vso[task.setvariable variable=MinorVer]$minorVer"
+        Write-Output "majorVer: $majorVer, minorVer = $minorVer"
+
+        $BuildReleaseVersion = [string]::Format("{0}.{1}", $temp, $buildid)
+        $BuildReleaseVersionWithBuildNumber = [string]::Format("{0}.{1}", $temp, $buildnumber)
+        
+        Write-Host "##vso[task.setvariable variable=ExeFilenameSuffix;]$ExeFilenameSuffix"
+        Write-Host "ExeFilenameSuffix: $ExeFilenameSuffix"
+        
+        
+        Write-Host "##vso[task.setvariable variable=BuildReleaseVersion;]$BuildReleaseVersion"
+        Write-Host "BuildReleaseVersion: $BuildReleaseVersion"
+        
+        Write-Host "##vso[task.setvariable variable=BuildReleaseVersionWithBuildNumber;]$BuildReleaseVersionWithBuildNumber"
+        Write-Host "BuildReleaseVersionWithBuildNumber: $BuildReleaseVersionWithBuildNumber"
+      ScriptArguments: '-buildsourcename $(Build.SourceBranchName) -defMajorVer $(DefMajorVer) -buildsourceversion $(Build.SourceVersion) -buildid $(Build.BuildId) -buildnumber $(Build.BuildNumber)'
